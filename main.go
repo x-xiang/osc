@@ -295,6 +295,12 @@ func tmux_paste() error {
 			return errors.New("tmux set-clipboard must be set to 'on' or 'external'")
 		}
 	}
+	// clean client list
+	if out, err := exec.Command("sh", "-c", "while tmux delete-buffer; do :; done").Output(); err != nil {
+		return fmt.Errorf("error running 'tmux delete-buffer': %v", err)
+	} else {
+		debugLog.Println("tmux delete-buffer output:", string(out))
+	}
 	// refresh client list
 	if out, err := exec.Command("tmux", "refresh-client", "-l").Output(); err != nil {
 		return fmt.Errorf("error running 'tmux refresh-client -l': %v", err)
@@ -302,15 +308,24 @@ func tmux_paste() error {
 		debugLog.Println("tmux refresh-client output:", string(out))
 	}
 	// give terminal time to sync
-	// https://github.com/rumpelsepp/oscclip/blob/6a4847ed5497baa9a9357b389f492f5d52c6867c/oscclip/__init__.py#L73
-	time.Sleep(50 * time.Millisecond)
-	if out, err := exec.Command("tmux", "save-buffer", "-").Output(); err != nil {
-		return fmt.Errorf("error running 'tmux save-buffer -': %v", err)
-	} else if _, err := os.Stdout.Write(out); err != nil {
-		errorLog.Println("Error writing to stdout:", err)
-		return err
+	te := time.NewTimer(time.Second)
+	defer te.Stop()
+	ti := time.NewTimer(10 * time.Millisecond)
+	defer ti.Stop()
+	for {
+		select {
+		case <-te.C:
+			return errors.New("error waiting for tmux to sync timeout")
+		case <-ti.C:
+			if out, err := exec.Command("tmux", "show-buffer").Output(); err == nil {
+				if _, err = os.Stdout.Write(out); err != nil {
+					errorLog.Println("Error writing to stdout:", err)
+				}
+				return err
+			}
+			ti.Reset(10 * time.Millisecond)
+		}
 	}
-	return nil
 }
 
 // wraps an io.Reader, reads until it encounters an ESC or BEL
