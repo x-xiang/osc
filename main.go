@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -11,14 +12,12 @@ import (
 	"os/exec"
 	"regexp"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/mattn/go-isatty"
-
-	"runtime/debug"
-
 	"github.com/spf13/cobra"
 )
 
@@ -43,6 +42,7 @@ var (
 	deviceFlag    string
 	clipboardFlag string
 	timeoutFlag   float64
+	tmuxTTY       string
 	debugLog      *log.Logger
 	errorLog      *log.Logger
 )
@@ -141,9 +141,7 @@ func identifyTerm() error {
 		oscOpen = DCS_OPEN + oscOpen
 		oscClose = oscClose + DCS_CLOSE
 	} else if isTmux {
-		debugLog.Println("Setting tmux dcs passthrough")
-		oscOpen = DCS_OPEN + "tmux;" + string(ESC) + oscOpen
-		oscClose = oscClose + DCS_CLOSE
+		debugLog.Println("tmux writing bare OSC52 to client_tty")
 	}
 
 	return nil
@@ -185,14 +183,15 @@ func (w *chunkingWriter) Write(p []byte) (n int, err error) {
 func copy(fnames []string) error {
 	// copy
 	if isTmux {
-		if out, err := exec.Command("tmux", "show", "-gwsv", "allow-passthrough").Output(); err != nil {
-			return fmt.Errorf("Error running 'tmux show -gwsv allow-passthrough': %w", err)
+		if out, err := exec.Command("tmux", "display-message", "-p", "#{client_tty}").Output(); err != nil {
+			return fmt.Errorf("Error running 'tmux display-message -p #{client_tty}': %w", err)
 		} else {
 			outStr := strings.TrimSpace(string(out))
-			debugLog.Println("'tmux show -gwsv allow-passthrough':", outStr)
-			if outStr != "on" && outStr != "all" {
-				return fmt.Errorf("tmux allow-passthrough must be set to 'on' or 'all'")
+			debugLog.Println("'tmux display-message -p #{client_tty}':", outStr)
+			if !strings.HasPrefix(outStr, "/dev/") {
+				return errors.New("posix tty of tmux client must has prefix of '/dev/'")
 			}
+			tmuxTTY = outStr
 		}
 	}
 
@@ -526,6 +525,8 @@ func ttyDevice() string {
 		return deviceFlag
 	} else if isScreen {
 		return "/dev/tty"
+	} else if isTmux {
+		return tmuxTTY
 	} else if sshtty := os.Getenv("SSH_TTY"); sshtty != "" {
 		return sshtty
 	} else {
